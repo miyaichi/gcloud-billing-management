@@ -1,6 +1,8 @@
 import argparse
+import os
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound
 
@@ -10,16 +12,16 @@ def get_billing_table_name(client, project_id, dataset_name):
     try:
         tables = list(client.list_tables(dataset_ref))
     except NotFound:
-        print(f"Error: Dataset '{project_id}.{dataset_name}' not found.")
-        print("Please make sure you have run the setup script and configured billing export.")
+        print(f"❌ Error: Dataset '{project_id}.{dataset_name}' not found.")
+        print("Please make sure you have run the setup script and correctly configured billing export in the Cloud Console.")
         return None
 
     for table in tables:
         if table.table_id.startswith('gcp_billing_export_v1_'):
             return f"`{project_id}.{dataset_name}.{table.table_id}`"
 
-    print(f"Error: No billing export table (gcp_billing_export_v1_*) found in dataset '{project_id}.{dataset_name}'.")
-    print("It may take some time for the table to be created after setting up the export.")
+    print(f"❌ Error: No billing export table (gcp_billing_export_v1_*) found in dataset '{project_id}.{dataset_name}'.")
+    print("It may take a few hours for the table to be created after setting up the export.")
     return None
 
 def get_monthly_costs(project_id, dataset_name, month):
@@ -40,7 +42,8 @@ def get_monthly_costs(project_id, dataset_name, month):
         start_date = last_month_start
         end_date = last_month_end
     else:
-        print(f"Error: Invalid month '{month}'. Use 'current' or 'last'.")
+        # This case should not be reached due to argparse choices
+        print(f"❌ Error: Invalid month '{month}'. Use 'current' or 'last'.")
         return
 
     query = f"""
@@ -60,7 +63,7 @@ def get_monthly_costs(project_id, dataset_name, month):
             total_cost DESC
     """
 
-    print(f"--- Running query for {month} month ({start_date} to {end_date}) ---")
+    print(f"--- Running query for {month} month ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}) ---")
 
     try:
         query_job = client.query(query)
@@ -73,23 +76,33 @@ def get_monthly_costs(project_id, dataset_name, month):
         print(f"{'Project ID':<40} | {'Total Cost':<15} | {'Currency'}")
         print("-" * 65)
         for row in results:
-            print(f"{row.project_id if row.project_id else 'N/A':<40} | {row.total_cost:15.2f} | {row.currency}")
+            # Handle cases where project ID might be null (e.g., for some service adjustments)
+            project_display = row.project_id if row.project_id else "N/A (e.g., taxes, adjustments)"
+            print(f"{project_display:<40} | {row.total_cost:15.2f} | {row.currency}")
 
     except Exception as e:
-        print(f"An error occurred while querying BigQuery: {e}")
+        print(f"❌ An error occurred while querying BigQuery: {e}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Get monthly GCP billing costs per project.')
-    parser.add_argument(
-        '--project',
-        required=True,
-        help='The GCP project ID where the billing dataset resides.'
-    )
-    parser.add_argument(
-        '--dataset',
-        default='billing_export',
-        help='The BigQuery dataset name for billing data (default: billing_export).'
+    # Load environment variables from .env file
+    load_dotenv()
+
+    # Get configuration from environment variables
+    project_id = os.getenv("BILLING_PROJECT_ID")
+    dataset_name = os.getenv("DATASET_NAME")
+
+    # Validate that required environment variables are set
+    if not project_id:
+        print("❌ Error: BILLING_PROJECT_ID is not set in your .env file.")
+        print("   Please run the ./setup_billing.sh script first to set it automatically.")
+        return
+    if not dataset_name:
+        print("❌ Error: DATASET_NAME is not set in your .env file.")
+        return
+    
+    parser = argparse.ArgumentParser(
+        description='Get monthly GCP billing costs per project. Configuration is loaded from the .env file.'
     )
     parser.add_argument(
         '--month',
@@ -99,7 +112,7 @@ def main():
     )
     args = parser.parse_args()
 
-    get_monthly_costs(args.project, args.dataset, args.month)
+    get_monthly_costs(project_id, dataset_name, args.month)
 
 if __name__ == '__main__':
     main()
